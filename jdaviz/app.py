@@ -1076,6 +1076,7 @@ class Application(VuetifyTemplate, HubListener):
         viewer : `~glue_jupyter.bqplot.common.BqplotBaseView`
             The new viewer instance.
         """
+
         viewer = self._application_handler.new_data_viewer(
             msg.cls, data=msg.data, show=False)
 
@@ -1103,7 +1104,6 @@ class Application(VuetifyTemplate, HubListener):
                                            sender=self)
         self.hub.broadcast(snackbar_message)
 
-        print("ADDING")
         self.session.application.viewers.append(viewer)
 
         return viewer
