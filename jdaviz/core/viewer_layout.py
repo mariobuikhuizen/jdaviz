@@ -83,52 +83,9 @@ def validate_and_normalize(layout, *, viewer_ids=None):
         raise ViewerLayoutError("layout.root: is required")
 
     seen_viewers = set()
-
-    def normalize(value, path, *, is_root=False):
-        node = _object(value, path, _NODE_FIELDS | {"children", "viewers", "activeViewerId"})
-        node_type = node.get("type")
-        if node_type not in ("row", "column", "stack"):
-            raise ViewerLayoutError(f"{path}.type: must be 'row', 'column', or 'stack'")
-        invalid_fields = {"children"} if node_type == "stack" else {"viewers", "activeViewerId"}
-        if invalid_fields & node.keys():
-            raise ViewerLayoutError(f"{path}: unknown field(s) for {node_type}")
-        if is_root:
-            node.pop("weight", None)
-        else:
-            node["weight"] = _weight(node.get("weight", 1), f"{path}.weight")
-        if node_type == "stack":
-            node["viewers"] = list(_array(node.get("viewers"), f"{path}.viewers"))
-            if not node["viewers"]:
-                return None
-            for index, viewer_id in enumerate(node["viewers"]):
-                _string(viewer_id, f"{path}.viewers[{index}]")
-                if viewer_id in seen_viewers:
-                    raise ViewerLayoutError(
-                        f"{path}: viewer ID {viewer_id!r} occurs more than once")
-                seen_viewers.add(viewer_id)
-            if node.get("activeViewerId") not in node["viewers"]:
-                node["activeViewerId"] = node["viewers"][0]
-            if result.get("maximizedViewerId") in node["viewers"]:
-                result["maximizedViewerId"] = node["activeViewerId"]
-        else:
-            children = _array(node.get("children"), f"{path}.children")
-            node["children"] = [normalized for index, child in enumerate(children)
-                                if (normalized := normalize(
-                                    child, f"{path}.children[{index}]")) is not None]
-            if not node["children"]:
-                return None
-            if len(node["children"]) == 1:
-                child = node["children"][0]
-                if is_root:
-                    child.pop("weight", None)
-                else:
-                    child["weight"] = node["weight"]
-                return child
-            _normalize_weights(node["children"])
-        return node
-
     if result["root"] is not None:
-        result["root"] = normalize(result["root"], "layout.root", is_root=True)
+        result["root"] = _normalize_node(result["root"], "layout.root", seen_viewers,
+                                         is_root=True)
     if viewer_ids is not None:
         expected = set(viewer_ids)
         missing = sorted(expected - seen_viewers)
@@ -141,7 +98,60 @@ def validate_and_normalize(layout, *, viewer_ids=None):
         if maximized_id not in seen_viewers:
             raise ViewerLayoutError(
                 f"layout.maximizedViewerId: does not refer to a viewer: {maximized_id!r}")
+        # A maximized stack always shows its active tab.
+        result["maximizedViewerId"] = _find_stack(result["root"], maximized_id)["activeViewerId"]
     return result
+
+
+def _normalize_node(value, path, seen_viewers, *, is_root=False):
+    """Return a normalized copy of a node, or `None` when it has no viewers."""
+    node = _object(value, path, _NODE_FIELDS | {"children", "viewers", "activeViewerId"})
+    node_type = node.get("type")
+    if node_type not in ("row", "column", "stack"):
+        raise ViewerLayoutError(f"{path}.type: must be 'row', 'column', or 'stack'")
+    invalid_fields = {"children"} if node_type == "stack" else {"viewers", "activeViewerId"}
+    if invalid_fields & node.keys():
+        raise ViewerLayoutError(f"{path}: unknown field(s) for {node_type}")
+    if is_root:
+        node.pop("weight", None)
+    else:
+        node["weight"] = _weight(node.get("weight", 1), f"{path}.weight")
+    if node_type == "stack":
+        return _normalize_stack(node, path, seen_viewers)
+    return _normalize_split(node, path, seen_viewers, is_root=is_root)
+
+
+def _normalize_stack(node, path, seen_viewers):
+    node["viewers"] = list(_array(node.get("viewers"), f"{path}.viewers"))
+    if not node["viewers"]:
+        return None
+    for index, viewer_id in enumerate(node["viewers"]):
+        _string(viewer_id, f"{path}.viewers[{index}]")
+        if viewer_id in seen_viewers:
+            raise ViewerLayoutError(f"{path}: viewer ID {viewer_id!r} occurs more than once")
+        seen_viewers.add(viewer_id)
+    if node.get("activeViewerId") not in node["viewers"]:
+        node["activeViewerId"] = node["viewers"][0]
+    return node
+
+
+def _normalize_split(node, path, seen_viewers, *, is_root):
+    children = _array(node.get("children"), f"{path}.children")
+    node["children"] = [normalized for index, child in enumerate(children)
+                        if (normalized := _normalize_node(
+                            child, f"{path}.children[{index}]", seen_viewers)) is not None]
+    if not node["children"]:
+        return None
+    if len(node["children"]) == 1:
+        # Collapse the split; its only child takes over its place and weight.
+        child = node["children"][0]
+        if is_root:
+            child.pop("weight", None)
+        else:
+            child["weight"] = node["weight"]
+        return child
+    _normalize_weights(node["children"])
+    return node
 
 
 def _nodes(node):
@@ -149,6 +159,11 @@ def _nodes(node):
         yield node
         for child in node.get("children", ()):
             yield from _nodes(child)
+
+
+def _find_stack(root, viewer_id):
+    return next(node for node in _nodes(root)
+                if viewer_id in node.get("viewers", ()))
 
 
 def iter_viewer_ids(layout):

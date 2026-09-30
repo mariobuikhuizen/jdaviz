@@ -76,6 +76,8 @@ enable_spaxel_unit()
 warnings.filterwarnings('ignore', message="The unit 'Angstrom' has been deprecated"
                         "in the VOUnit standard")
 
+# Configuration containers that hold structural children become native splits.
+SPLIT_TYPES = dict(row='row', col='column', stack='column')
 EXT_TYPES = dict(flux=['flux', 'sci'],
                  uncert=['ivar', 'err', 'var', 'uncert'],
                  mask=['mask', 'dq'])
@@ -3521,7 +3523,6 @@ class PrivateApplication(VuetifyTemplate, HubListener):
             layout_items = []
 
             for item in viewer_area_items:
-                node_type = {'row': 'row', 'col': 'column', 'stack': 'stack'}[item['container']]
                 viewer_ids = []
 
                 for view in item.get('viewers', []):
@@ -3541,13 +3542,13 @@ class PrivateApplication(VuetifyTemplate, HubListener):
                     viewer_ids.append(viewer_item['id'])
 
                 children = compose_viewer_area(item.get('children', []))
-                if node_type == 'stack' and not children:
+                if item['container'] == 'stack' and not children:
                     layout_items.append({'type': 'stack', 'viewers': viewer_ids})
                 else:
                     # The existing configuration renders structural children before
                     # its own viewers, but creates parent viewers first (above).
                     children.extend({'type': 'stack', 'viewers': [vid]} for vid in viewer_ids)
-                    layout_items.append({'type': 'column' if node_type == 'stack' else node_type,
+                    layout_items.append({'type': SPLIT_TYPES[item['container']],
                                          'children': children})
 
             return layout_items

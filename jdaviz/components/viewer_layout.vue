@@ -67,6 +67,20 @@ const MIN_PANE_SIZE = 50
 const cloneLayout = (layout) => JSON.parse(JSON.stringify(layout))
 const sum = (values) => values.reduce((a, b) => a + b, 0)
 
+// Docking beside a target splits along the side's axis, before or after it.
+const splitSide = (side) => ({
+  axis: ['left', 'right'].includes(side) ? 'row' : 'column',
+  before: ['left', 'top'].includes(side),
+})
+
+// Shrink a box to the half facing the drop side.
+function halfBox(box, side) {
+  const { axis, before } = splitSide(side)
+  const [position, dimension] = axis === 'row' ? ['left', 'width'] : ['top', 'height']
+  const half = box[dimension] / 2
+  return { ...box, [dimension]: half, [position]: box[position] + (before ? 0 : half) }
+}
+
 function findStack(node, id, parent = null) {
   if (!node) return null
   if (node.type === 'stack') return node.viewers.includes(id) ? { node, parent } : null
@@ -77,8 +91,21 @@ function findStack(node, id, parent = null) {
   return null
 }
 
+// Mirrors _normalize_weights in core/viewer_layout.py: sibling weights sum to
+// one with twelve-digit precision, and none become zero.
+function normalizeWeights(children) {
+  const weights = children.map((child) => child.weight ?? 1)
+  const scale = Math.max(...weights)
+  const scaled = weights.map((weight) => weight / scale)
+  const total = sum(scaled)
+  const normalized = scaled.map((weight) => Math.max(+(weight / total).toFixed(12), 1e-12))
+  const largest = normalized.indexOf(Math.max(...normalized))
+  normalized[largest] = +(normalized[largest] + (1 - sum(normalized))).toFixed(12)
+  children.forEach((child, i) => { child.weight = normalized[i] })
+}
+
 // The Python boundary validates input. Edits only need pruning, defaults, and
-// the same positive twelve-digit weight normalization as the canonical model.
+// the same weight normalization as the canonical model.
 export function normalizeLayout(layout) {
   function prune(node) {
     if (!node) return null
@@ -93,14 +120,7 @@ export function normalizeLayout(layout) {
         child.weight = node.weight
         return child
       }
-      const weights = node.children.map((child) => child.weight ?? 1)
-      const scale = Math.max(...weights)
-      const scaled = weights.map((weight) => weight / scale)
-      const total = sum(scaled)
-      const normalized = scaled.map((weight) => Math.max(+(weight / total).toFixed(12), 1e-12))
-      const largest = normalized.indexOf(Math.max(...normalized))
-      normalized[largest] = +(normalized[largest] + (1 - sum(normalized))).toFixed(12)
-      node.children.forEach((child, i) => { child.weight = normalized[i] })
+      normalizeWeights(node.children)
     }
     // Keep field order stable for comparisons with Python's normalized replies.
     return node.type === 'stack'
@@ -144,8 +164,7 @@ export function dockViewerAtRoot(layout, id, side) {
   // Prune the source before choosing how to split the remaining root.
   result = normalizeLayout(result)
   const stack = { type: 'stack', viewers: [id], activeViewerId: id, weight: 0.5 }
-  const axis = ['left', 'right'].includes(side) ? 'row' : 'column'
-  const before = ['left', 'top'].includes(side)
+  const { axis, before } = splitSide(side)
   if (!result.root) result.root = stack
   else if (result.root.type === axis) {
     result.root.children.forEach((child) => { child.weight /= 2 })
@@ -173,8 +192,7 @@ export function dockViewer(layout, id, targetId, side = 'center', index) {
     target.viewers.splice(insertion, 0, id)
     target.activeViewerId = id
   } else {
-    const axis = ['left', 'right'].includes(side) ? 'row' : 'column'
-    const before = ['left', 'top'].includes(side)
+    const { axis, before } = splitSide(side)
     const stack = { type: 'stack', viewers: [id], activeViewerId: id }
     if (parent?.type === axis) {
       target.weight /= 2
@@ -327,13 +345,15 @@ function close(id) {
   const next = closeViewer(current.value, id)
   const active = remaining.length ? findStack(next.root, remaining[0]).node.activeViewerId : null
   publish(next, id)
+  focusTab(active)
+}
+// Focus a tab once rendered; without an ID, focus any selected tab.
+function focusTab(id) {
   nextTick(() => {
     if (disposed || !host.value) return
-    const tabs = [...host.value.querySelectorAll('[role=tab]')]
-    const target = active
-      ? tabs.find((tab) => tab.dataset.viewerTabId === active)
-      : tabs.find((tab) => tab.getAttribute('aria-selected') === 'true')
-    target?.focus()
+    host.value.querySelector(id
+      ? `[role=tab][data-viewer-tab-id="${CSS.escape(id)}"]`
+      : '[role=tab][aria-selected="true"]')?.focus()
   })
 }
 function maximize(id) {
@@ -353,11 +373,7 @@ function tabKey(event, stack, id) {
   event.preventDefault()
   id = stack.viewers[(index + stack.viewers.length) % stack.viewers.length]
   select(id)
-  nextTick(() => {
-    if (disposed || !host.value) return
-    const tabs = [...host.value.querySelectorAll('[role=tab]')]
-    tabs.find((tab) => tab.dataset.viewerTabId === id)?.focus()
-  })
+  focusTab(id)
 }
 
 function start(event, detail) {
@@ -431,59 +447,59 @@ function updateDrop(event, edit) {
   drop.value = null
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return
   if (current.value.root?.type === 'stack' && current.value.root.viewers.length === 1) return
-  // A narrow band at the outer border wins over individual pane targets.
-  // Choose the nearest edge at corners, so all four remain reachable.
-  const edges = [['left', x], ['right', rect.width - x], ['top', y], ['bottom', rect.height - y]]
-  edges.sort((a, b) => a[1] - b[1])
-  if (edges[0][1] < Math.min(8, rect.width / 8, rect.height / 8)) {
-    const side = edges[0][0]
-    const preview = { left: 0, top: 0, width: rect.width, height: rect.height }
-    if (side === 'left' || side === 'right') {
-      preview.width /= 2
-      if (side === 'right') preview.left = preview.width
-    } else {
-      preview.height /= 2
-      if (side === 'bottom') preview.top = preview.height
-    }
-    drop.value = { root: true, side, preview }
-    return
-  }
+  drop.value = rootEdgeDrop(x, y, rect) ?? paneDrop(event, edit, x, y, rect)
+}
+
+// A narrow band at the outer border wins over individual pane targets.
+// Choose the nearest edge at corners, so all four remain reachable.
+function rootEdgeDrop(x, y, rect) {
+  const [[side, distance]] = [['left', x], ['right', rect.width - x], ['top', y], ['bottom', rect.height - y]]
+    .sort((a, b) => a[1] - b[1])
+  if (distance >= Math.min(8, rect.width / 8, rect.height / 8)) return null
+  return { root: true, side, preview: halfBox({ left: 0, top: 0, width: rect.width, height: rect.height }, side) }
+}
+
+// Dropping on a header inserts a tab; dropping on content docks by quarter.
+function paneDrop(event, edit, x, y, rect) {
   const pane = geometry.value.panes.find((box) => x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height)
-  drop.value = null
-  if (!pane || (pane.node.viewers.length === 1 && pane.node.viewers[0] === edit.id)) return
-  let side = 'center', index, tab
-  const preview = { left: pane.left, top: pane.top, width: pane.width, height: pane.height }
+  if (!pane || (pane.node.viewers.length === 1 && pane.node.viewers[0] === edit.id)) return null
+  const targetId = pane.node.viewers[0]
   const contentTop = pane.top + (props.hasHeaders ? HEADER : 0)
+  if (y < contentTop) return { targetId, side: 'center', ...tabDrop(event, edit, pane, rect) }
   const verticalEdge = (pane.top + pane.height - contentTop) / 4
-  if (y < contentTop) {
-    const container = tabElements.get(pane.key)
-    const tabs = []
-    let shift = 0
-    // Measure without the rendered gap so insertion cannot oscillate. Read
-    // the DOM rather than drop state: a same-turn release can precede rendering.
-    for (const element of container.children) {
-      const box = element.getBoundingClientRect()
-      if (element.classList.contains('jdz-native-tab-placeholder')) shift += box.width
-      else tabs.push({ left: box.left - shift, width: box.width })
-    }
-    index = tabs.findIndex((box) => event.clientX < box.left + box.width / 2)
-    if (index < 0) index = tabs.length
-    tab = { paneKey: pane.key, index }
-    const insertionX = index < tabs.length ? tabs[index].left : tabs.at(-1).left + tabs.at(-1).width
-    const viewport = container.getBoundingClientRect()
-    preview.left = Math.max(viewport.left, Math.min(insertionX, viewport.right - TAB_DROP_WIDTH)) - rect.left
-    preview.width = Math.min(TAB_DROP_WIDTH, viewport.width)
-    // dockViewer accepts insertion indices from before source removal.
-    const source = findStack(current.value.root, edit.id).node
-    if (source.viewers.includes(pane.node.viewers[0]) && source.viewers.indexOf(edit.id) <= index) index++
-    preview.height = HEADER
-  } else if (x - pane.left < pane.width / 4) side = 'left'
+  let side = 'center'
+  if (x - pane.left < pane.width / 4) side = 'left'
   else if (pane.left + pane.width - x < pane.width / 4) side = 'right'
   else if (y - contentTop < verticalEdge) side = 'top'
   else if (pane.top + pane.height - y < verticalEdge) side = 'bottom'
-  if (['left', 'right'].includes(side)) { preview.width /= 2; if (side === 'right') preview.left += preview.width }
-  if (['top', 'bottom'].includes(side)) { preview.height /= 2; if (side === 'bottom') preview.top += preview.height }
-  drop.value = { targetId: pane.node.viewers[0], side, index, tab, preview }
+  const box = { left: pane.left, top: pane.top, width: pane.width, height: pane.height }
+  return { targetId, side, preview: side === 'center' ? box : halfBox(box, side) }
+}
+
+function tabDrop(event, edit, pane, rect) {
+  const container = tabElements.get(pane.key)
+  const tabs = []
+  let shift = 0
+  // Measure without the rendered gap so insertion cannot oscillate. Read
+  // the DOM rather than drop state: a same-turn release can precede rendering.
+  for (const element of container.children) {
+    const box = element.getBoundingClientRect()
+    if (element.classList.contains('jdz-native-tab-placeholder')) shift += box.width
+    else tabs.push({ left: box.left - shift, width: box.width })
+  }
+  let index = tabs.findIndex((box) => event.clientX < box.left + box.width / 2)
+  if (index < 0) index = tabs.length
+  const tab = { paneKey: pane.key, index }
+  const insertionX = index < tabs.length ? tabs[index].left : tabs.at(-1).left + tabs.at(-1).width
+  const viewport = container.getBoundingClientRect()
+  const preview = {
+    left: Math.max(viewport.left, Math.min(insertionX, viewport.right - TAB_DROP_WIDTH)) - rect.left,
+    top: pane.top, width: Math.min(TAB_DROP_WIDTH, viewport.width), height: HEADER,
+  }
+  // dockViewer accepts insertion indices from before source removal.
+  const source = findStack(current.value.root, edit.id).node
+  if (source.viewers.includes(pane.node.viewers[0]) && source.viewers.indexOf(edit.id) <= index) index++
+  return { index, tab, preview }
 }
 
 async function finish(event) {
