@@ -40,6 +40,7 @@ from specutils.utils.wcs_utils import SpectralGWCS
 from jdaviz import __version__
 from jdaviz import style_registry
 from jdaviz.core.config import read_configuration, get_configuration
+from jdaviz.core.custom_regions import RangeRegion
 from jdaviz.core.events import (LoadDataMessage, NewViewerMessage, AddDataMessage,
                                 DataRenamedMessage, SnackbarMessage, RemoveDataMessage,
                                 SubsetRenameMessage, AddDataToViewerMessage,
@@ -207,6 +208,7 @@ custom_components = {'j-tooltip': 'components/tooltip.vue',
                      'data-menu-remove': 'components/data_menu_remove.vue',
                      'data-menu-subset-edit': 'components/data_menu_subset_edit.vue',
                      'hover-api-hint': 'components/hover_api_hint.vue',
+                     'j-api-hint': 'components/api_hint_text.vue',
                      'j-rename-text': 'components/j_rename_text.vue'}
 
 # Register pure vue component. This allows us to do recursive component instantiation only in the
@@ -1350,15 +1352,22 @@ class PrivateApplication(VuetifyTemplate, HubListener):
                 raise ValueError("Unable to find spectral axis units")
         else:
             data = subset_state.att.parent
-            ndim = data.get_component("flux").ndim
-            if ndim == 2:
-                units = u.pix
+            if "Catalog" in data.meta.get('_importer', ''):
+                # TODO: Handle catalog data with units of the x and y axes of the scatter plot
+                units = u.Unit('')
             else:
-                handler, _ = data_translator.get_handler_for(Spectrum)
-                spec = handler.to_object(data)
-                units = spec.spectral_axis.unit
+                ndim = data.get_component("flux").ndim
+                if ndim == 2:
+                    units = u.pix
+                else:
+                    handler, _ = data_translator.get_handler_for(Spectrum)
+                    spec = handler.to_object(data)
+                    units = spec.spectral_axis.unit
 
-        if use_display_units and units != u.pix:
+        if "Catalog" in data.meta.get('_importer', ''):
+            # We use a wrapper around SpectralRegion with a more appropriate name
+            spec_region = RangeRegion(subset_state.lo * units, subset_state.hi * units)
+        elif use_display_units and units not in (u.pix,):
             # converting may result in flipping order (wavelength <-> frequency)
             ret_units = self._get_display_unit('spectral')
             subset_bounds = [(subset_state.lo * units).to(ret_units, u.spectral()),

@@ -140,14 +140,14 @@ New Features
 
 - Add update feature to standalone app to allow users to click to see if update is available. [#4400]
 
+- Add restriction to Source Catalog loader that either an ra/dec pair or an x/y
+  pair must be selected for import. [#4435]
+
 Mosviz
 ^^^^^^
 
 API Changes
 -----------
-
-Mosviz
-^^^^^^
 
 Bug Fixes
 ---------
@@ -164,8 +164,6 @@ Bug Fixes
 - Fix color picker not showing correctly. [#4332]
 
 - Fix error when typing while renaming data or subset. [#4359]
-
-
 
 Mosviz
 ^^^^^^
@@ -190,7 +188,20 @@ Other Changes and Additions
 - Changing visible columns in the table viewer has been moved from the Plot Options
   plugin to a tool in the table viewer toolbar (with deprecation). [#4382]
 
-5.0.5 (unreleased)
+
+5.0.6 (unreleased)
+==================
+
+Bug Fixes
+---------
+
+- Fix using ``get_regions`` when a subset is defined on scatter data. [#4433]
+
+Mosviz
+^^^^^^
+
+
+5.0.5 (2026-10-16)
 ==================
 
 Bug Fixes
@@ -203,7 +214,6 @@ Bug Fixes
 - Fix viewer container width. [#4424, #4430]
 
 - Fixed AttributeError: 'NoneType' object has no attribute 'height' by ensuring figure_widget has an assigned layout. [#4429]
-
 
 - Fix an IO error when loading another data type after loading a 1D spectrum. [#4428]
 
